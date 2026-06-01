@@ -1,0 +1,15 @@
+# Core scientific stack
+numpy
+pandas
+matplotlib
+scikit-learn
+
+# Jupyter
+notebook
+ipykernel
+
+# Time series
+prophet
+
+# Visualization (used in several notebooks)
+seaborn
