@@ -13,3 +13,9 @@ prophet
 
 # Visualization (used in several notebooks)
 seaborn
+
+# Clustering extension
+kmodes
+
+# Testing
+pytest
