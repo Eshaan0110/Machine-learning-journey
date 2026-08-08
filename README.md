@@ -16,6 +16,7 @@ A hands-on collection of ML algorithm implementations built while learning core 
 | Support Vector Machines | `KNN and SVM.ipynb` |
 | Naive Bayes | `Naive Bayes.ipynb` |
 | Random Forest | `Random Forest.ipynb` |
+| Gradient Boosting & AdaBoost | `Gradient Boosting.ipynb` |
 | K-Means Clustering | `Clustering.ipynb`, `KMeans.ipynb` |
 | Neural Networks | `Neural Network.ipynb` |
 | Q-Learning | `Q learning.ipynb` |
@@ -25,7 +26,7 @@ Root notebooks are quick experiments. The `Lab1/`–`Lab4/` folders contain more
 
 ## Tests
 
-A pytest suite in `tests/test_algorithms.py` covers mathematical invariants for every algorithm (46 tests):
+A pytest suite in `tests/test_algorithms.py` covers mathematical invariants for every algorithm (53 tests):
 
 ```bash
 pytest tests/

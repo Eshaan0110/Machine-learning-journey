@@ -442,3 +442,83 @@ class TestActivations:
         e = np.exp(z - np.max(z, axis=1, keepdims=True))
         out = e / e.sum(axis=1, keepdims=True)
         assert np.argmax(out) == 1
+
+
+# ---------------------------------------------------------------------------
+# Boosting (Gradient Boosting residuals, AdaBoost weight updates)
+# ---------------------------------------------------------------------------
+
+class TestBoosting:
+    def test_gradient_boosting_reduces_residual_variance(self):
+        # A single boosting round should shrink the residual toward zero
+        # whenever the weak learner's predictions correlate with it.
+        rng = np.random.RandomState(0)
+        y = rng.randn(50) * 5
+        residual = y - np.mean(y)
+        weak_pred = residual * 0.8 + rng.randn(50) * 0.1  # learner tracks residual closely
+        lr = 0.1
+        new_residual = residual - lr * weak_pred
+        assert np.var(new_residual) < np.var(residual)
+
+    def test_gradient_boosting_converges_toward_target(self):
+        rng = np.random.RandomState(1)
+        y = rng.randn(30) * 3 + 10
+        pred = np.full(30, np.mean(y))
+        errors = []
+        for _ in range(20):
+            residual = y - pred
+            errors.append(np.mean(residual ** 2))
+            pred = pred + 0.3 * residual  # perfect weak learner = identity on residual
+        assert errors[-1] < errors[0]
+
+    def test_adaboost_alpha_high_when_error_low(self):
+        err_low = 0.05
+        err_high = 0.45
+        alpha_low = 0.5 * np.log((1 - err_low) / err_low)
+        alpha_high = 0.5 * np.log((1 - err_high) / err_high)
+        assert alpha_low > alpha_high
+        assert alpha_low > 0 and alpha_high > 0
+
+    def test_adaboost_alpha_zero_at_random_guessing(self):
+        err = 0.5
+        alpha = 0.5 * np.log((1 - err) / err)
+        assert np.isclose(alpha, 0.0)
+
+    def test_adaboost_weight_update_increases_misclassified(self):
+        n = 10
+        w = np.full(n, 1 / n)
+        y = np.ones(n)
+        pred = np.ones(n)
+        pred[:3] = -1  # first 3 samples misclassified
+        err = np.sum(w[pred != y])
+        alpha = 0.5 * np.log((1 - err) / err)
+        w_new = w * np.exp(-alpha * y * pred)
+        w_new /= w_new.sum()
+        assert w_new[:3].min() > w_new[3:].max()
+
+    def test_adaboost_weights_stay_normalized(self):
+        rng = np.random.RandomState(2)
+        n = 20
+        w = np.full(n, 1 / n)
+        y = rng.choice([-1, 1], size=n)
+        for _ in range(5):
+            pred = rng.choice([-1, 1], size=n)
+            err = np.clip(np.sum(w[pred != y]), 1e-10, 1 - 1e-10)
+            alpha = 0.5 * np.log((1 - err) / err)
+            w = w * np.exp(-alpha * y * pred)
+            w = w / w.sum()
+            assert np.isclose(w.sum(), 1.0)
+            assert np.all(w >= 0)
+
+    def test_adaboost_decision_stump_beats_random_on_separable_data(self):
+        # A single-feature threshold should perfectly separate linearly
+        # separable 1D data, giving zero weighted error.
+        X = np.array([[1.0], [2.0], [3.0], [8.0], [9.0], [10.0]])
+        y = np.array([-1, -1, -1, 1, 1, 1])
+        w = np.full(6, 1 / 6)
+        best_err = np.inf
+        for t in [1.5, 3.5, 5.5, 8.5]:
+            pred = np.where(X[:, 0] <= t, -1, 1)
+            err = np.sum(w[pred != y])
+            best_err = min(best_err, err)
+        assert best_err == 0.0
