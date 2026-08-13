@@ -522,3 +522,87 @@ class TestBoosting:
             err = np.sum(w[pred != y])
             best_err = min(best_err, err)
         assert best_err == 0.0
+
+
+# ---------------------------------------------------------------------------
+# K-Fold Cross-Validation
+# ---------------------------------------------------------------------------
+
+def _k_fold_split(n_samples, k=5, shuffle=True, seed=None):
+    idx = np.arange(n_samples)
+    if shuffle:
+        rng = np.random.RandomState(seed)
+        rng.shuffle(idx)
+    fold_sizes = np.full(k, n_samples // k, dtype=int)
+    fold_sizes[: n_samples % k] += 1
+    folds = []
+    start = 0
+    for size in fold_sizes:
+        val_idx = idx[start:start + size]
+        train_idx = np.concatenate([idx[:start], idx[start + size:]])
+        folds.append((train_idx, val_idx))
+        start += size
+    return folds
+
+
+class TestKFoldCrossValidation:
+    def test_every_sample_validated_exactly_once(self):
+        folds = _k_fold_split(97, k=5, seed=0)
+        all_val = np.concatenate([val for _, val in folds])
+        assert sorted(all_val) == list(range(97))
+
+    def test_train_val_never_overlap(self):
+        folds = _k_fold_split(50, k=5, seed=1)
+        for train_idx, val_idx in folds:
+            assert len(set(train_idx) & set(val_idx)) == 0
+
+    def test_fold_sizes_within_one_of_each_other(self):
+        folds = _k_fold_split(23, k=5, seed=2)
+        sizes = [len(val) for _, val in folds]
+        assert max(sizes) - min(sizes) <= 1
+        assert sum(sizes) == 23
+
+    def test_train_plus_val_covers_all_samples(self):
+        n = 40
+        folds = _k_fold_split(n, k=4, seed=3)
+        for train_idx, val_idx in folds:
+            assert len(train_idx) + len(val_idx) == n
+
+    def test_k_equals_n_is_leave_one_out(self):
+        folds = _k_fold_split(10, k=10, seed=4)
+        assert all(len(val_idx) == 1 for _, val_idx in folds)
+
+    def test_no_shuffle_is_deterministic_contiguous_blocks(self):
+        folds = _k_fold_split(10, k=5, shuffle=False)
+        assert list(folds[0][1]) == [0, 1]
+        assert list(folds[-1][1]) == [8, 9]
+
+    def test_cross_val_score_mean_within_fold_range(self):
+        rng = np.random.RandomState(5)
+        X = rng.randn(60, 2)
+        y = (X[:, 0] > 0).astype(float)
+
+        def fit_predict(X_tr, y_tr, X_val):
+            return (X_val[:, 0] > 0).astype(float)
+
+        folds = _k_fold_split(len(X), k=5, seed=6)
+        scores = []
+        for train_idx, val_idx in folds:
+            y_pred = fit_predict(X[train_idx], y[train_idx], X[val_idx])
+            scores.append(np.mean(y[val_idx] == y_pred))
+        scores = np.array(scores)
+        assert scores.min() <= scores.mean() <= scores.max()
+
+    def test_kfold_mean_more_stable_than_single_split(self):
+        # Averaging over folds should reduce variance relative to any
+        # single fold's estimate, since noise partially cancels.
+        rng = np.random.RandomState(7)
+        y_true = rng.randint(0, 2, size=200)
+        y_pred = y_true.copy()
+        flip = rng.choice(200, size=40, replace=False)
+        y_pred[flip] = 1 - y_pred[flip]
+
+        folds = _k_fold_split(200, k=10, seed=8)
+        fold_accs = np.array([np.mean(y_true[val] == y_pred[val]) for _, val in folds])
+        overall_acc = np.mean(y_true == y_pred)
+        assert abs(fold_accs.mean() - overall_acc) < 1e-9

@@ -20,13 +20,14 @@ A hands-on collection of ML algorithm implementations built while learning core 
 | K-Means Clustering | `Clustering.ipynb`, `KMeans.ipynb` |
 | Neural Networks | `Neural Network.ipynb` |
 | Q-Learning | `Q learning.ipynb` |
+| K-Fold Cross-Validation | `Cross Validation.ipynb` |
 | Time Series (Prophet) | `prophet-learning/` |
 
 Root notebooks are quick experiments. The `Lab1/`–`Lab4/` folders contain more structured lab versions of the same algorithms.
 
 ## Tests
 
-A pytest suite in `tests/test_algorithms.py` covers mathematical invariants for every algorithm (53 tests):
+A pytest suite in `tests/test_algorithms.py` covers mathematical invariants for every algorithm (61 tests):
 
 ```bash
 pytest tests/
