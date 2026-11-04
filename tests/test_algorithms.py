@@ -606,3 +606,76 @@ class TestKFoldCrossValidation:
         fold_accs = np.array([np.mean(y_true[val] == y_pred[val]) for _, val in folds])
         overall_acc = np.mean(y_true == y_pred)
         assert abs(fold_accs.mean() - overall_acc) < 1e-9
+
+
+class TestModelPersistence:
+    """Round-trip save/load of a numpy model via .npz + .json."""
+
+    @staticmethod
+    def _fit(X, y, n_iter=300, lr=0.1):
+        mean, std = X.mean(0), X.std(0) + 1e-12
+        Z = (X - mean) / std
+        w, b = np.zeros(X.shape[1]), 0.0
+        for _ in range(n_iter):
+            err = 1 / (1 + np.exp(-(Z @ w + b))) - y
+            w -= lr * Z.T @ err / len(y)
+            b -= lr * err.mean()
+        return w, b, mean, std
+
+    @staticmethod
+    def _proba(X, w, b, mean, std):
+        return 1 / (1 + np.exp(-(((X - mean) / std) @ w + b)))
+
+    @staticmethod
+    def _save(path, w, b, mean, std):
+        import json
+        np.savez(path + ".npz", w=w, b=np.array(b), mean=mean, std=std)
+        with open(path + ".json", "w") as f:
+            json.dump({"n_features": int(w.shape[0])}, f)
+
+    @staticmethod
+    def _load(path):
+        import json
+        with open(path + ".json") as f:
+            meta = json.load(f)
+        with np.load(path + ".npz") as d:
+            w, b, mean, std = d["w"], float(d["b"]), d["mean"], d["std"]
+        if w.shape[0] != meta["n_features"]:
+            raise ValueError("shape mismatch")
+        return w, b, mean, std
+
+    def _data(self):
+        rng = np.random.RandomState(0)
+        X = rng.randn(80, 4) * [1, 5, 10, 0.1] + [0, 3, -2, 1]
+        y = (X[:, 0] + 0.1 * X[:, 1] > 0.3).astype(float)
+        return X, y
+
+    def test_roundtrip_predictions_identical(self, tmp_path):
+        X, y = self._data()
+        params = self._fit(X, y)
+        p = str(tmp_path / "m")
+        self._save(p, *params)
+        assert np.array_equal(self._proba(X, *params), self._proba(X, *self._load(p)))
+
+    def test_scaler_statistics_must_be_persisted(self, tmp_path):
+        # Reloading weights but re-estimating the scaler on new data changes outputs.
+        X, y = self._data()
+        w, b, mean, std = self._fit(X, y)
+        X_new = X[:10]
+        correct = self._proba(X_new, w, b, mean, std)
+        wrong = self._proba(X_new, w, b, X_new.mean(0), X_new.std(0) + 1e-12)
+        assert not np.allclose(correct, wrong)
+
+    def test_load_rejects_mismatched_metadata(self, tmp_path):
+        import json
+        X, y = self._data()
+        p = str(tmp_path / "m")
+        self._save(p, *self._fit(X, y))
+        with open(p + ".json", "w") as f:
+            json.dump({"n_features": 99}, f)
+        with pytest.raises(ValueError):
+            self._load(p)
+
+    def test_load_missing_file_raises(self, tmp_path):
+        with pytest.raises(FileNotFoundError):
+            self._load(str(tmp_path / "absent"))
