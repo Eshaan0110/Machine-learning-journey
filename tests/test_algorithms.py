@@ -679,3 +679,79 @@ class TestModelPersistence:
     def test_load_missing_file_raises(self, tmp_path):
         with pytest.raises(FileNotFoundError):
             self._load(str(tmp_path / "absent"))
+
+
+# ---------------------------------------------------------------------------
+# Stratified K-Fold and Grid Search
+# ---------------------------------------------------------------------------
+
+def _stratified_k_fold_split(y, k=5, shuffle=True, seed=None):
+    y = np.asarray(y)
+    rng = np.random.RandomState(seed)
+    members = [[] for _ in range(k)]
+    offset = 0
+    for cls in np.unique(y):
+        idx = np.where(y == cls)[0]
+        if shuffle:
+            rng.shuffle(idx)
+        for j, i in enumerate(idx):
+            members[(j + offset) % k].append(i)
+        offset += len(idx)
+    all_idx = np.arange(len(y))
+    out = []
+    for m in members:
+        val = np.sort(np.array(m, dtype=int))
+        out.append((np.setdiff1d(all_idx, val), val))
+    return out
+
+
+def _grid_search_cv(X, y, grid, make_fp, k=3, seed=0):
+    import itertools
+    names = list(grid)
+    folds = _stratified_k_fold_split(y, k, seed=seed)
+    results = []
+    for vals in itertools.product(*(grid[n] for n in names)):
+        params = dict(zip(names, vals))
+        fp = make_fp(**params)
+        s = [np.mean(y[v] == fp(X[t], y[t], X[v])) for t, v in folds]
+        results.append((params, float(np.mean(s))))
+    return max(results, key=lambda r: r[1]), results
+
+
+class TestStratifiedGridSearch:
+    def test_folds_partition_samples(self):
+        y = np.array([0] * 47 + [1] * 13 + [2] * 20)
+        folds = _stratified_k_fold_split(y, k=4, seed=1)
+        val = np.concatenate([v for _, v in folds])
+        assert sorted(val) == list(range(len(y)))
+        for tr, v in folds:
+            assert len(set(tr) & set(v)) == 0
+
+    def test_class_ratio_preserved(self):
+        y = np.array([0] * 90 + [1] * 10)
+        for _, v in _stratified_k_fold_split(y, k=5, seed=0):
+            assert y[v].sum() == 2
+
+    def test_small_class_per_fold_counts_differ_by_at_most_one(self):
+        y = np.array([0] * 50 + [1] * 7)
+        counts = [int(y[v].sum()) for _, v in _stratified_k_fold_split(y, k=5, seed=3)]
+        assert max(counts) - min(counts) <= 1 and sum(counts) == 7
+
+    def test_seed_reproducible(self):
+        y = np.array([0] * 30 + [1] * 30)
+        a = _stratified_k_fold_split(y, 3, seed=5)
+        b = _stratified_k_fold_split(y, 3, seed=5)
+        assert all(np.array_equal(x[1], z[1]) for x, z in zip(a, b))
+
+    def test_grid_search_picks_best_param_and_covers_grid(self):
+        rng = np.random.RandomState(0)
+        X = np.vstack([rng.randn(40, 2) - 3, rng.randn(40, 2) + 3])
+        y = np.array([0] * 40 + [1] * 40)
+
+        def make_fp(threshold):
+            # classify by sign of feature sum relative to threshold
+            return lambda Xt, yt, Xv: (Xv.sum(axis=1) > threshold).astype(int)
+
+        best, results = _grid_search_cv(X, y, {"threshold": [-50.0, 0.0, 50.0]}, make_fp)
+        assert len(results) == 3
+        assert best[0]["threshold"] == 0.0 and best[1] > 0.95
