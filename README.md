@@ -22,6 +22,7 @@ A hands-on collection of ML algorithm implementations built while learning core 
 | Q-Learning | `Q learning.ipynb` |
 | K-Fold Cross-Validation | `Cross Validation.ipynb` |
 | Stratified K-Fold + Grid Search | `Grid Search.ipynb` |
+| Classification Metrics (P/R/F1, ROC, PR) | `Classification Metrics.ipynb` |
 | Model Persistence (npz/json, joblib) | `Model Persistence.ipynb` |
 | Time Series (Prophet) | `prophet-learning/` |
 

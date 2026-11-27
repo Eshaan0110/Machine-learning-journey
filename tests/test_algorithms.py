@@ -755,3 +755,98 @@ class TestStratifiedGridSearch:
         best, results = _grid_search_cv(X, y, {"threshold": [-50.0, 0.0, 50.0]}, make_fp)
         assert len(results) == 3
         assert best[0]["threshold"] == 0.0 and best[1] > 0.95
+
+
+# ---- Classification metrics (mirrors Classification Metrics.ipynb) ----
+def confusion_matrix(y_true, y_pred, n_classes=None):
+    y_true, y_pred = np.asarray(y_true), np.asarray(y_pred)
+    if n_classes is None:
+        n_classes = int(max(y_true.max(), y_pred.max())) + 1
+    cm = np.zeros((n_classes, n_classes), dtype=int)
+    np.add.at(cm, (y_true, y_pred), 1)   # rows = actual, cols = predicted
+    return cm
+
+def _safe_div(a, b):
+    a, b = np.asarray(a, float), np.asarray(b, float)
+    return np.divide(a, b, out=np.zeros_like(a), where=b != 0)
+
+def precision_recall_f1(y_true, y_pred, average=None, n_classes=None):
+    cm = confusion_matrix(y_true, y_pred, n_classes)
+    tp = np.diag(cm).astype(float)
+    pred_pos, actual_pos = cm.sum(axis=0), cm.sum(axis=1)
+    if average == 'micro':
+        p = r = tp.sum() / cm.sum()
+        return p, r, _safe_div(2 * p * r, p + r)
+    p, r = _safe_div(tp, pred_pos), _safe_div(tp, actual_pos)
+    f = _safe_div(2 * p * r, p + r)
+    if average is None:
+        return p, r, f
+    w = np.ones(len(tp)) / len(tp) if average == 'macro' else actual_pos / actual_pos.sum()
+    return (p * w).sum(), (r * w).sum(), (f * w).sum()
+
+def accuracy(y_true, y_pred):
+    return float(np.mean(np.asarray(y_true) == np.asarray(y_pred)))
+def _threshold_counts(y_true, scores):
+    y_true, scores = np.asarray(y_true), np.asarray(scores)
+    order = np.argsort(-scores, kind='mergesort')
+    y_s, s_s = y_true[order], scores[order]
+    distinct = np.where(np.diff(s_s))[0]
+    idx = np.r_[distinct, len(y_s) - 1]       # last index of each distinct score
+    tps = np.cumsum(y_s)[idx]
+    fps = 1 + idx - tps
+    return fps, tps, s_s[idx]
+
+def roc_curve(y_true, scores):
+    fps, tps, thr = _threshold_counts(y_true, scores)
+    tpr, fpr = tps / tps[-1], fps / fps[-1]
+    return np.r_[0, fpr], np.r_[0, tpr], np.r_[np.inf, thr]
+
+def auc(x, y):
+    return float(np.sum(np.diff(x) * (y[1:] + y[:-1]) / 2))   # trapezoid rule
+
+def roc_auc_score(y_true, scores):
+    fpr, tpr, _ = roc_curve(y_true, scores)
+    return auc(fpr, tpr)
+
+def precision_recall_curve(y_true, scores):
+    fps, tps, thr = _threshold_counts(y_true, scores)
+    precision, recall = tps / (tps + fps), tps / tps[-1]
+    return np.r_[precision[::-1], 1], np.r_[recall[::-1], 0], thr[::-1]
+
+def average_precision(y_true, scores):
+    p, r, _ = precision_recall_curve(y_true, scores)
+    return float(-np.sum(np.diff(r) * p[:-1]))
+
+
+class TestClassificationMetrics:
+    def test_confusion_matrix_layout(self):
+        cm = confusion_matrix([0, 0, 1, 1, 1], [0, 1, 1, 1, 0])
+        assert cm.tolist() == [[1, 1], [1, 2]]
+
+    def test_prf_binary_known_values(self):
+        p, r, f = precision_recall_f1([0, 0, 1, 1, 1], [0, 1, 1, 1, 0])
+        assert np.allclose(p[1], 2 / 3) and np.allclose(r[1], 2 / 3) and np.allclose(f[1], 2 / 3)
+
+    def test_zero_division_returns_zero(self):
+        p, r, f = precision_recall_f1([0, 0, 1], [0, 0, 0], n_classes=2)
+        assert p[1] == 0 and r[1] == 0 and f[1] == 0
+
+    def test_averages_match_sklearn(self):
+        from sklearn import metrics as skm
+        rng = np.random.RandomState(0)
+        yt, yp = rng.randint(0, 3, 200), rng.randint(0, 3, 200)
+        for avg in ['micro', 'macro', 'weighted']:
+            ref = skm.precision_recall_fscore_support(yt, yp, average=avg)[:3]
+            assert np.allclose(precision_recall_f1(yt, yp, average=avg), ref)
+
+    def test_roc_auc_and_ap_match_sklearn_with_ties(self):
+        from sklearn import metrics as skm
+        rng = np.random.RandomState(1)
+        y = rng.randint(0, 2, 300)
+        s = np.round(rng.rand(300) + 0.5 * y, 1)   # many tied scores
+        assert np.isclose(roc_auc_score(y, s), skm.roc_auc_score(y, s))
+        assert np.isclose(average_precision(y, s), skm.average_precision_score(y, s))
+
+    def test_perfect_and_random_auc(self):
+        assert roc_auc_score([0, 0, 1, 1], [0.1, 0.2, 0.8, 0.9]) == 1.0
+        assert roc_auc_score([0, 1, 0, 1], [0.5, 0.5, 0.5, 0.5]) == 0.5
