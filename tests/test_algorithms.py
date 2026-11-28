@@ -850,3 +850,147 @@ class TestClassificationMetrics:
     def test_perfect_and_random_auc(self):
         assert roc_auc_score([0, 0, 1, 1], [0.1, 0.2, 0.8, 0.9]) == 1.0
         assert roc_auc_score([0, 1, 0, 1], [0.5, 0.5, 0.5, 0.5]) == 0.5
+
+
+# ---------------------------------------------------------------------------
+# Preprocessing pipeline
+# ---------------------------------------------------------------------------
+
+class StandardScaler:
+    def fit(self, X):
+        X = np.asarray(X, float)
+        self.mean_ = np.nanmean(X, axis=0)
+        self.scale_ = np.nanstd(X, axis=0)
+        self.scale_[self.scale_ == 0] = 1.0   # constant column: leave centred, avoid /0
+        return self
+    def transform(self, X):
+        return (np.asarray(X, float) - self.mean_) / self.scale_
+    def inverse_transform(self, Z):
+        return np.asarray(Z) * self.scale_ + self.mean_
+
+class MinMaxScaler:
+    def __init__(self, feature_range=(0, 1)):
+        self.feature_range = feature_range
+    def fit(self, X):
+        X = np.asarray(X, float)
+        self.min_, self.max_ = np.nanmin(X, axis=0), np.nanmax(X, axis=0)
+        self.range_ = np.where(self.max_ - self.min_ == 0, 1.0, self.max_ - self.min_)
+        return self
+    def transform(self, X):
+        lo, hi = self.feature_range
+        return (np.asarray(X, float) - self.min_) / self.range_ * (hi - lo) + lo
+
+class SimpleImputer:
+    def __init__(self, strategy='mean'):
+        self.strategy = strategy
+    def fit(self, X):
+        X = np.asarray(X, float)
+        f = {'mean': np.nanmean, 'median': np.nanmedian}[self.strategy]
+        self.fill_ = f(X, axis=0)
+        return self
+    def transform(self, X):
+        X = np.array(X, float)
+        r, c = np.where(np.isnan(X))
+        X[r, c] = self.fill_[c]
+        return X
+
+class OneHotEncoder:
+    """Categories learned at fit time; unseen categories map to all zeros."""
+    def fit(self, X):
+        X = np.asarray(X, dtype=object).reshape(len(X), -1)
+        self.categories_ = [sorted(set(X[:, j])) for j in range(X.shape[1])]
+        return self
+    def transform(self, X):
+        X = np.asarray(X, dtype=object).reshape(len(X), -1)
+        cols = []
+        for j, cats in enumerate(self.categories_):
+            idx = {c: i for i, c in enumerate(cats)}
+            block = np.zeros((len(X), len(cats)))
+            for i, v in enumerate(X[:, j]):
+                if v in idx:
+                    block[i, idx[v]] = 1
+            cols.append(block)
+        return np.hstack(cols)
+
+class OrdinalEncoder:
+    def __init__(self, order=None):
+        self.order = order
+    def fit(self, X):
+        X = np.asarray(X, dtype=object).reshape(len(X), -1)
+        self.categories_ = self.order or [sorted(set(X[:, j])) for j in range(X.shape[1])]
+        return self
+    def transform(self, X):
+        X = np.asarray(X, dtype=object).reshape(len(X), -1)
+        out = np.full(X.shape, np.nan)
+        for j, cats in enumerate(self.categories_):
+            idx = {c: i for i, c in enumerate(cats)}
+            out[:, j] = [idx.get(v, np.nan) for v in X[:, j]]
+        return out
+
+class ColumnTransformer:
+    def __init__(self, transformers):
+        self.transformers = transformers   # [(name, transformer, [col indices])]
+    def fit(self, X):
+        X = np.asarray(X, dtype=object)
+        for _, t, cols in self.transformers:
+            t.fit(X[:, cols])
+        return self
+    def transform(self, X):
+        X = np.asarray(X, dtype=object)
+        return np.hstack([np.asarray(t.transform(X[:, cols]), float) for _, t, cols in self.transformers])
+
+class Pipeline:
+    def __init__(self, steps):
+        self.steps = steps   # [(name, obj)]; last may be a model
+    def fit(self, X, y=None):
+        for _, s in self.steps[:-1]:
+            X = s.fit(X).transform(X)
+        last = self.steps[-1][1]
+        last.fit(X, y) if y is not None else last.fit(X)
+        return self
+    def _pre(self, X):
+        for _, s in self.steps[:-1]:
+            X = s.transform(X)
+        return X
+    def transform(self, X):
+        return self.steps[-1][1].transform(self._pre(X))
+    def predict(self, X):
+        return self.steps[-1][1].predict(self._pre(X))
+
+
+class TestPreprocessing:
+    def test_scalers_match_sklearn(self):
+        from sklearn.preprocessing import StandardScaler as S, MinMaxScaler as M
+        X = np.random.RandomState(0).randn(40, 3) * 4 + 1
+        assert np.allclose(StandardScaler().fit(X).transform(X), S().fit_transform(X))
+        assert np.allclose(MinMaxScaler().fit(X).transform(X), M().fit_transform(X))
+
+    def test_scaler_uses_train_stats_and_roundtrips(self):
+        sc = StandardScaler().fit(np.array([[1.], [2.], [3.]]))
+        assert np.allclose(sc.transform(np.array([[2.]])), 0)
+        Z = sc.transform(np.array([[7.]]))
+        assert np.allclose(sc.inverse_transform(Z), 7)
+
+    def test_constant_column_no_nan(self):
+        assert not np.isnan(StandardScaler().fit(np.ones((5, 2))).transform(np.ones((5, 2)))).any()
+
+    def test_imputer_uses_fit_values(self):
+        imp = SimpleImputer('median').fit(np.array([[1.], [np.nan], [3.], [100.]]))
+        assert imp.transform(np.array([[np.nan]]))[0, 0] == 3.0
+
+    def test_onehot_unseen_is_zero(self):
+        enc = OneHotEncoder().fit([['a'], ['b']])
+        assert enc.transform([['b'], ['z']]).tolist() == [[0, 1], [0, 0]]
+
+    def test_ordinal_order_and_unseen_nan(self):
+        enc = OrdinalEncoder(order=[['lo', 'hi']]).fit([['hi']])
+        out = enc.transform([['hi'], ['lo'], ['??']])
+        assert out[:2, 0].tolist() == [1, 0] and np.isnan(out[2, 0])
+
+    def test_column_transformer_pipeline_shape(self):
+        X = np.array([[1.0, 'a'], [np.nan, 'b'], [3.0, 'a']], dtype=object)
+        ct = ColumnTransformer([
+            ('n', Pipeline([('i', SimpleImputer()), ('s', StandardScaler())]), [0]),
+            ('c', OneHotEncoder(), [1])])
+        out = ct.fit(X).transform(X)
+        assert out.shape == (3, 3) and not np.isnan(out).any()
